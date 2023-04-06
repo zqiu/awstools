@@ -1,38 +1,50 @@
 REGIONS=("us-east-1" "us-east-2" "us-west-1" "us-west-2" "ap-south-1" "ap-northeast-1" "ap-northeast-2" "ap-northeast-3" "ca-central-1" "eu-central-1" "eu-west-1" "eu-west-2" "eu-west-3" "eu-north-1")
-INSTANCES="c6a.4xlarge c6i.4xlarge c6id.4xlarge c6in.4xlarge c7g.4xlarge"
-INSTANCES2X="c6a.2xlarge c6i.2xlarge c6id.2xlarge c6in.2xlarge c7g.2xlarge"
-INSTANCEARRAY=($INSTANCES)
-INSTANCEARRAY2X=($INSTANCES2X)
+INSTANCESIZE=("xlarge" "2xlarge" "4xlarge")
+INSTANCETYPE=("c6a." "c6i." "c6id." "c6in." "c7g.")
+INSTANCES=()
 QUOTE="'"
 
-rm 4xlarge
-rm 2xlarge
-rm combined
-rm combined2x
+oldIFS=$IFS
+IFS=","
 
+#delete any leftover files
+rm combined*
+rm raw*
+
+#build up array of instance string to pass to AWS command
+for i in ${INSTANCESIZE[@]}; do
+	tempinstance=( "${INSTANCETYPE[@]/%/$i}" )
+	#temp=$(IFS=" " ; echo "${tempinstance[*]}")
+	temp=""
+	for j in ${INSTANCETYPE[@]};do
+		temp+="$j$i "
+	done
+	INSTANCES+=($temp)
+done
+
+IFS=$oldIFS
+
+#call AWS commands
 for i in ${REGIONS[@]}; do
 	echo getting $i
-	aws --region=$i ec2 describe-spot-price-history --instance-types $INSTANCES --start-time=$(date +%s) --product-descriptions="Linux/UNIX"  --query 'SpotPriceHistory[*].{az:AvailabilityZone, price:SpotPrice, type:InstanceType}' >> 4xlarge
-	aws --region=$i ec2 describe-spot-price-history --instance-types $INSTANCES2X --start-time=$(date +%s) --product-descriptions="Linux/UNIX"  --query 'SpotPriceHistory[*].{az:AvailabilityZone, price:SpotPrice, type:InstanceType}' >> 2xlarge
+	for ((j = 0; j<${#INSTANCES[@]};j++)); do
+		aws --region=$i ec2 describe-spot-price-history --start-time=$(date +%s) --product-descriptions="Linux/UNIX" --query "SpotPriceHistory[*].{az:AvailabilityZone, price:SpotPrice, type:InstanceType}" --instance-types ${INSTANCES[$j]} >> raw${INSTANCESIZE[$j]}
+	done
 done
 
-#combine all data
-cat 4xlarge | jq -s 'add' > combined
-cat 2xlarge | jq -s 'add' > combined2x
-#get global min
+#combine all data and get global mins
 echo "global min"
-cat combined | jq -c 'min_by(.price)'
-cat combined2x | jq -c 'min_by(.price)'
+for i in ${INSTANCESIZE[@]}; do
+	cat raw$i | jq -s 'add' > combined$i
+	cat combined$i | jq -c 'min_by(.price)'
+done
 
 #get min by instance type
-for i in ${INSTANCES[@]}; do
-	echo $i "min"
-	command="jq -c ${QUOTE}map(select( .type == \"${i}\")) | min_by(.price)${QUOTE}"
-	cat combined | eval $command
-done
-
-for i in ${INSTANCES2X[@]}; do
-	echo $i "min"
-	command="jq -c ${QUOTE}map(select( .type == \"${i}\")) | min_by(.price)${QUOTE}"
-	cat combined2x | eval $command
+for ((i = 0; i<${#INSTANCES[@]};i++)); do
+	INSTANCEARRAY=(${INSTANCES[$i]})
+	for j in ${INSTANCEARRAY[@]}; do
+		echo $j "min"
+		command="jq -c ${QUOTE}map(select( .type == \"${j}\")) | min_by(.price)${QUOTE}"
+		cat combined${INSTANCESIZE[$i]} | eval $command
+	done
 done
